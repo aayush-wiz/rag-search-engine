@@ -11,18 +11,19 @@ import argparse
 import os
 import sys
 
-# Add the project root to sys.path to allow importing from the 'lib' and 'utils' directories
-ROOT = os.getcwd()
+# Add the project root to sys.path to allow importing from the 'cli', 'lib', and 'utils' directories
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
-    sys.path.append(ROOT)
+    sys.path.insert(0, ROOT)
 
-from lib.keyword_search import (  # noqa: E402
+from cli.utils.paths import DATA_PATH, STOP_WORDS_PATH, CACHE_DIR  # noqa: E402
+from cli.lib.keyword_search import (  # noqa: E402
     InvertedIndex,
     bm25_idf_command,
     bm25_tf_command,
     load_resources,
 )
-from utils.search_utils import BM25_B, BM25_K1, clean_and_tokenize  # noqa: E402
+from cli.utils.search_utils import BM25_B, BM25_K1, clean_and_tokenize  # noqa: E402
 
 
 STOP_WORDS, MOVIES = load_resources()
@@ -96,112 +97,115 @@ def main() -> None:
 
     index = InvertedIndex()
 
-    if args.command == "search":
-        try:
-            index.load()
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-            return
+    match args.command:
+        case "search":
+            try:
+                index.load()
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                return
 
-        query_tokens = clean_and_tokenize(args.query, STOP_WORDS)
-        results = []
-        seen_ids = set()
+            query_tokens = clean_and_tokenize(args.query, STOP_WORDS)
+            results = []
+            seen_ids = set()
 
-        for token in query_tokens:
-            doc_ids = index.get_documents(token)
-            for doc_id in doc_ids:
-                if doc_id not in seen_ids:
-                    seen_ids.add(doc_id)
-                    results.append(doc_id)
-        if not results:
-            print("No results found.")
-            return
-
-        for i, doc_id in enumerate(results, 1):
-            movie = index.docmap[doc_id]
-            print(f"{i}. {movie['title']} (ID: {doc_id})")
-
-    elif args.command == "tf":
-        try:
-            index.load()
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-            return
-
-        try:
-            freq = index.get_tf(args.doc_id, args.term, STOP_WORDS)
-            movie_title = index.docmap.get(args.doc_id, {}).get(
-                "title", f"Movie {args.doc_id}"
-            )
-            print(f"Term '{args.term}' appears {freq} time(s) in '{movie_title}'")
-        except ValueError as e:
-            print(f"Error: {e}")
-
-    elif args.command == "idf":
-        try:
-            index.load()
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-            print("Tip: Run './cli/keyword_search_cli.py build' first.")
-            return
-
-        try:
-            idf = index.get_idf(args.term, STOP_WORDS)
-            print(f"Inverse document frequency of '{args.term}': {idf:.2f}")
-        except ValueError as e:
-            print(f"Error: {e}")
-
-    elif args.command == "tfidf":
-        try:
-            index.load()
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-            return
-
-        try:
-            tf_idf = index.get_tfidf(args.doc_id, args.term, STOP_WORDS)
-            print(
-                f"TF-IDF score of '{args.term}' in document '{args.doc_id}': {tf_idf:.2f}"
-            )
-        except ValueError as e:
-            print(f"Error: {e}")
-
-    elif args.command == "bm25idf":
-        result = bm25_idf_command(args.term, STOP_WORDS)
-        if result is not None:
-            print(f"BM25 IDF score of '{args.term}': {result:.2f}")
-
-    elif args.command == "bm25tf":
-        result = bm25_tf_command(args.doc_id, args.term, STOP_WORDS, args.k1, args.b)
-        if result is not None:
-            print(
-                f"BM25 TF score of '{args.term}' in document '{args.doc_id}': {result:.2f}"
-            )
-
-    elif args.command == "bm25search":
-        try:
-            index.load()
-        except FileNotFoundError as e:
-            print(f"Error: {e}")
-            print("Tip: Run './cli/keyword_search_cli.py build' first.")
-            return
-
-        try:
-            results = index.bm25_search(args.query, STOP_WORDS, args.limit)
+            for token in query_tokens:
+                doc_ids = index.get_documents(token)
+                for doc_id in doc_ids:
+                    if doc_id not in seen_ids:
+                        seen_ids.add(doc_id)
+                        results.append(doc_id)
             if not results:
                 print("No results found.")
                 return
 
-            for i, (doc_id, score) in enumerate(results, 1):
-                movie = index.docmap.get(doc_id, {"title": "Unknown", "id": doc_id})
-                print(f"{i}. ({movie['id']}) {movie['title']} - Score: {score:.2f}")
-        except ValueError as e:
-            print(f"Error: {e}")
+            for i, doc_id in enumerate(results, 1):
+                movie = index.docmap[doc_id]
+                print(f"{i}. {movie['title']} (ID: {doc_id})")
 
-    elif args.command == "build":
-        index.build(MOVIES, STOP_WORDS)
-        index.save()
-        print("Index built and saved.")
+        case "tf":
+            try:
+                index.load()
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                return
+
+            try:
+                freq = index.get_tf(args.doc_id, args.term, STOP_WORDS)
+                movie_title = index.docmap.get(args.doc_id, {}).get(
+                    "title", f"Movie {args.doc_id}"
+                )
+                print(f"Term '{args.term}' appears {freq} time(s) in '{movie_title}'")
+            except ValueError as e:
+                print(f"Error: {e}")
+
+        case "idf":
+            try:
+                index.load()
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                print("Tip: Run './cli/keyword_search_cli.py build' first.")
+                return
+
+            try:
+                idf = index.get_idf(args.term, STOP_WORDS)
+                print(f"Inverse document frequency of '{args.term}': {idf:.2f}")
+            except ValueError as e:
+                print(f"Error: {e}")
+
+        case "tfidf":
+            try:
+                index.load()
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                return
+
+            try:
+                tf_idf = index.get_tfidf(args.doc_id, args.term, STOP_WORDS)
+                print(
+                    f"TF-IDF score of '{args.term}' in document '{args.doc_id}': {tf_idf:.2f}"
+                )
+            except ValueError as e:
+                print(f"Error: {e}")
+
+        case "bm25idf":
+            result = bm25_idf_command(args.term, STOP_WORDS)
+            if result is not None:
+                print(f"BM25 IDF score of '{args.term}': {result:.2f}")
+
+        case "bm25tf":
+            result = bm25_tf_command(
+                args.doc_id, args.term, STOP_WORDS, args.k1, args.b
+            )
+            if result is not None:
+                print(
+                    f"BM25 TF score of '{args.term}' in document '{args.doc_id}': {result:.2f}"
+                )
+
+        case "bm25search":
+            try:
+                index.load()
+            except FileNotFoundError as e:
+                print(f"Error: {e}")
+                print("Tip: Run './cli/keyword_search_cli.py build' first.")
+                return
+
+            try:
+                results = index.bm25_search(args.query, STOP_WORDS, args.limit)
+                if not results:
+                    print("No results found.")
+                    return
+
+                for i, (doc_id, score) in enumerate(results, 1):
+                    movie = index.docmap.get(doc_id, {"title": "Unknown", "id": doc_id})
+                    print(f"{i}. ({movie['id']}) {movie['title']} - Score: {score:.2f}")
+            except ValueError as e:
+                print(f"Error: {e}")
+
+        case "build":
+            index.build(MOVIES, STOP_WORDS)
+            index.save()
+            print("Index built and saved.")
 
 
 if __name__ == "__main__":

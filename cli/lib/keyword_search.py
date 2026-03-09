@@ -9,18 +9,16 @@ import pickle
 from collections import Counter
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from utils.search_utils import BM25_B, BM25_K1, clean_and_tokenize
-
-LIB_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(LIB_DIR)
-
-DATA_PATH = os.path.join(ROOT, "data", "movies.json")
-STOP_WORDS_PATH = os.path.join(ROOT, "data", "stopwords.txt")
-CACHE_DIR = os.path.join(ROOT, "cache")
-INDEX_CACHE_PATH = os.path.join(CACHE_DIR, "index.pkl")
-DOCMAP_CACHE_PATH = os.path.join(CACHE_DIR, "docmap.pkl")
-TERM_FREQUENCIES_CACHE_PATH = os.path.join(CACHE_DIR, "term_frequencies.pkl")
-DOC_LENGTH_CACHE_PATH = os.path.join(CACHE_DIR, "doc_lengths.pkl")
+from cli.utils.paths import (  # noqa: E402
+    CACHE_DIR,
+    DATA_PATH,
+    DOC_LENGTH_CACHE_PATH,
+    DOCMAP_CACHE_PATH,
+    INDEX_CACHE_PATH,
+    STOP_WORDS_PATH,
+    TERM_FREQUENCIES_CACHE_PATH,
+)
+from cli.utils.search_utils import BM25_B, BM25_K1, clean_and_tokenize  # noqa: E402
 
 
 class InvertedIndex:
