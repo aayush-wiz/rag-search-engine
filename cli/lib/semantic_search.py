@@ -5,24 +5,25 @@ import numpy as np
 import os
 import json
 import re
-
+from typing import List, Dict, Any, Optional, Tuple
 from cli.utils.paths import CACHE_DIR, DATA_PATH  # noqa: E402
 
 EMBEDDING_CACHE_PATH = os.path.join(CACHE_DIR, "movie_embeddings.npy")
-MOVIE_PATH = DATA_PATH
+CHUNK_EMBEDDING_CACHE_PATH = os.path.join(CACHE_DIR, "chunk_embeddings.npy")
+CHUNK_METADATA_CACHE_PATH = os.path.join(CACHE_DIR, "chunk_metadata.json")
 
 
 class SemanticSearch:
     """Encapsulates embedding generation, storage, and cosine-similarity search."""
 
-    def __init__(self):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
         """Load the sentence-transformer model and initialise internal state."""
-        self.model = SentenceTransformer("all-MiniLM-L6-v2")
-        self.embeddings = None
-        self.documents = None
-        self.document_map = {}
+        self.model = SentenceTransformer(model_name)
+        self.embeddings: Optional[np.ndarray] = None
+        self.documents: Optional[List[Dict[str, Any]]] = None
+        self.document_map: Dict[str, Dict[str, Any]] = {}
 
-    def generate_embedding(self, text):
+    def generate_embedding(self, text: str) -> np.ndarray:
         """Return the embedding vector for a single piece of text.
 
         Args:
@@ -39,7 +40,7 @@ class SemanticSearch:
         embedding = self.model.encode([text])
         return embedding[0]
 
-    def build_embeddings(self, documents):
+    def build_embeddings(self, documents: List[Dict[str, Any]]) -> np.ndarray:
         """Encode all documents and persist the resulting embeddings to disk.
 
         Each document is encoded as ``"<title>: <description>"``. The embeddings
@@ -54,21 +55,22 @@ class SemanticSearch:
             A 2-D numpy array of shape ``(len(documents), embedding_dim)``.
         """
         self.documents = documents
-        input = []
+        input_texts = []
         for document in documents:
             self.document_map[document["id"]] = document
             combined_info = f"{document['title']}: {document['description']}"
-            input.append(combined_info)
-        self.embeddings = self.model.encode(input, show_progress_bar=True)
+            input_texts.append(combined_info)
+        embeddings: np.ndarray = self.model.encode(input_texts, show_progress_bar=True)
+        self.embeddings = embeddings
 
         if not os.path.exists(CACHE_DIR):
             os.makedirs(CACHE_DIR)
 
-        np.save(EMBEDDING_CACHE_PATH, self.embeddings)
+        np.save(EMBEDDING_CACHE_PATH, embeddings)
 
-        return self.embeddings
+        return embeddings
 
-    def load_or_create_embeddings(self, documents):
+    def load_or_create_embeddings(self, documents: List[Dict[str, Any]]) -> np.ndarray:
         """Return embeddings from cache if valid, otherwise build and cache them.
 
         The cached file is considered valid when its length matches the number
@@ -88,13 +90,14 @@ class SemanticSearch:
             self.document_map[document["id"]] = document
 
         if os.path.exists(EMBEDDING_CACHE_PATH):
-            self.embeddings = np.load(EMBEDDING_CACHE_PATH)
-            if len(self.embeddings) == len(documents):
-                return self.embeddings
+            cached_embeddings: np.ndarray = np.load(EMBEDDING_CACHE_PATH)
+            if len(cached_embeddings) == len(documents):
+                self.embeddings = cached_embeddings
+                return cached_embeddings
 
         return self.build_embeddings(documents)
 
-    def search(self, query, limit=5):
+    def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Find the most semantically similar documents for a query.
 
         Computes cosine similarity between the query embedding and every
@@ -118,7 +121,7 @@ class SemanticSearch:
             )
 
         query_embedding = self.generate_embedding(query)
-        results = []
+        results: List[Tuple[float, Dict[str, Any]]] = []
 
         for i, doc_embedding in enumerate(self.embeddings):
             score = cosine_similarity(doc_embedding, query_embedding)
@@ -127,7 +130,7 @@ class SemanticSearch:
         # Sort by similarity score in descending order
         results.sort(key=lambda x: x[0], reverse=True)
 
-        top_results = []
+        top_results: List[Dict[str, Any]] = []
         for score, doc in results[:limit]:
             top_results.append(
                 {
@@ -138,6 +141,137 @@ class SemanticSearch:
             )
 
         return top_results
+
+
+class ChunkedSemanticSearch(SemanticSearch):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
+        super().__init__(model_name)
+        self.chunk_embeddings: Optional[np.ndarray] = None
+        self.chunk_metadata: Optional[List[Dict[str, Any]]] = None
+
+    def build_chunk_embeddings(self, documents: List[Dict[str, Any]]) -> np.ndarray:
+        self.documents = documents
+        for document in documents:
+            self.document_map[document["id"]] = document
+        chunks_list: List[str] = []
+        chunk_info: List[Dict[str, Any]] = []
+        for index, document in enumerate(self.documents):
+            if len(document["description"]) == 0:
+                continue
+            chunks = _chunk_text(document["description"], 4, 1)
+            for chunk_idx, chunk in enumerate(chunks):
+                chunks_list.append(chunk)
+                chunk_info.append(
+                    {
+                        "movie_idx": index,
+                        "chunk_idx": chunk_idx,
+                        "total_chunks": len(chunks),
+                    }
+                )
+        chunk_embeddings: np.ndarray = self.model.encode(
+            chunks_list, show_progress_bar=True
+        )
+        self.chunk_embeddings = chunk_embeddings
+        self.chunk_metadata = chunk_info
+        np.save(CHUNK_EMBEDDING_CACHE_PATH, chunk_embeddings)
+        with open(CHUNK_METADATA_CACHE_PATH, "w") as f:
+            json.dump(
+                {"chunks": self.chunk_metadata, "total_chunks": len(chunks_list)},
+                f,
+                indent=2,
+            )
+        return chunk_embeddings
+
+    def load_or_create_chunk_embeddings(
+        self, documents: List[Dict[str, Any]]
+    ) -> np.ndarray:
+        self.documents = documents
+        for document in documents:
+            self.document_map[document["id"]] = document
+        if os.path.exists(CHUNK_EMBEDDING_CACHE_PATH) and os.path.exists(
+            CHUNK_METADATA_CACHE_PATH
+        ):
+            chunk_embeddings: np.ndarray = np.load(CHUNK_EMBEDDING_CACHE_PATH)
+            with open(CHUNK_METADATA_CACHE_PATH, "r") as f:
+                metadata = json.load(f)
+            # Validate cache: rebuild if document count changed
+            cached_doc_indices = {c["movie_idx"] for c in metadata["chunks"]}
+            if len(cached_doc_indices) == len(documents):
+                self.chunk_embeddings = chunk_embeddings
+                self.chunk_metadata = metadata["chunks"]
+                return chunk_embeddings
+        return self.build_chunk_embeddings(documents)
+
+    def search_chunks(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        chunk_metadata = self.chunk_metadata
+        if chunk_metadata is None:
+            if not os.path.exists(CHUNK_METADATA_CACHE_PATH):
+                raise ValueError(
+                    "No chunk metadata loaded. Call `load_or_create_chunk_embeddings` first."
+                )
+            with open(CHUNK_METADATA_CACHE_PATH, "r") as f:
+                metadata = json.load(f)
+            chunk_metadata = metadata["chunks"]
+            self.chunk_metadata = chunk_metadata
+
+        chunk_embeddings = self.chunk_embeddings
+        if chunk_embeddings is None:
+            if not os.path.exists(CHUNK_EMBEDDING_CACHE_PATH):
+                raise ValueError(
+                    "No chunk embeddings loaded. Call `load_or_create_chunk_embeddings` first."
+                )
+            chunk_embeddings = np.load(CHUNK_EMBEDDING_CACHE_PATH)
+            self.chunk_embeddings = chunk_embeddings
+
+        if chunk_metadata is None or chunk_embeddings is None:
+            raise ValueError("Failed to load chunk embeddings or metadata.")
+
+        if len(chunk_embeddings) != len(chunk_metadata):
+            raise ValueError("Chunk embeddings and metadata are out of sync.")
+
+        query_embedding = self.generate_embedding(query)
+        chunks_score: List[Dict[str, Any]] = []
+        for idx, chunk_embedding in enumerate(chunk_embeddings):
+            similarity = cosine_similarity(chunk_embedding, query_embedding)
+            chunk_meta = chunk_metadata[idx]
+            chunks_score.append(
+                {
+                    "chunk_idx": chunk_meta["chunk_idx"],
+                    "movie_idx": chunk_meta["movie_idx"],
+                    "score": float(similarity),
+                }
+            )
+
+        if self.documents is None:
+            raise ValueError(
+                "No documents loaded. Call `load_or_create_chunk_embeddings` first."
+            )
+
+        movie_scores: Dict[int, float] = {}
+        for chunk_score in chunks_score:
+            movie_idx = int(chunk_score["movie_idx"])
+            score = float(chunk_score["score"])
+            if movie_idx not in movie_scores or score > movie_scores[movie_idx]:
+                movie_scores[movie_idx] = score
+
+        ranked_movies = sorted(
+            movie_scores.items(), key=lambda item: item[1], reverse=True
+        )
+        top_ranked_movies = ranked_movies[:limit]
+
+        results: List[Dict[str, Any]] = []
+        for movie_idx, score in top_ranked_movies:
+            movie = self.documents[movie_idx]
+            description = str(movie.get("description", ""))
+            results.append(
+                {
+                    "score": score,
+                    "title": movie.get("title"),
+                    "description": description[:100],
+                }
+            )
+
+        return results
 
 
 def verify_model():
@@ -172,7 +306,7 @@ def verify_embeddings():
     """
     semantic_search = SemanticSearch()
     try:
-        with open(MOVIE_PATH, "r") as f:
+        with open(DATA_PATH, "r") as f:
             data = json.load(f)
             movies = data.get("movies", [])
     except (FileNotFoundError, json.JSONDecodeError) as e:
@@ -238,7 +372,7 @@ def perform_semantic_search(query: str, limit: int) -> None:
     """
     semantic_search = SemanticSearch()
     try:
-        with open(MOVIE_PATH, "r") as f:
+        with open(DATA_PATH, "r") as f:
             data = json.load(f)
             movies = data.get("movies", [])
     except (FileNotFoundError, json.JSONDecodeError) as e:
@@ -252,7 +386,30 @@ def perform_semantic_search(query: str, limit: int) -> None:
         print(f"   {movie['description']}\n")
 
 
-def chunk_query(query: str, chunk_size: int, overlap: int, semantic: bool) -> None:
+def _chunk_text(query: str, chunk_size: int, overlap: int) -> List[str]:
+    """Split text into chunks without printing. Used internally by ChunkedSemanticSearch."""
+    normalized_query = query.strip()
+    if not normalized_query:
+        return []
+
+    tokens = re.split(r"(?<=[.!?])\s+", normalized_query)
+    if len(tokens) == 1 and not re.search(r"[.!?]\s*$", normalized_query):
+        tokens = [normalized_query]
+
+    tokens = [token.strip() for token in tokens if token.strip()]
+    chunks = []
+    i = 0
+    while i < len(tokens):
+        chunk = " ".join(tokens[i : chunk_size + i]).strip()
+        i += chunk_size - overlap
+        if chunk:
+            chunks.append(chunk)
+    if len(chunks) > 1 and chunks[-1] in chunks[-2]:
+        chunks.pop()
+    return chunks
+
+
+def chunk_query(query: str, chunk_size: int, overlap: int, semantic: bool) -> List[str]:
     """Split a query into chunks and print each one.
 
     In word mode (``semantic=False``) the query is split on whitespace and
@@ -271,17 +428,56 @@ def chunk_query(query: str, chunk_size: int, overlap: int, semantic: bool) -> No
             split on whitespace.
     """
     characters = len(query)
-    tokens = query.split() if not semantic else re.split(r"(?<=[.!?])\s+", query)
-    chunks = []
-    i = 0
-    while i < len(tokens):
-        chunk = " ".join(tokens[i : chunk_size + i])
-        i += chunk_size - overlap
-        chunks.append(chunk)
-    if len(chunks) > 1 and chunks[-1] in chunks[-2]:
-        chunks.pop()
+    chunks = _chunk_text(query, chunk_size, overlap)
+    if not chunks and not query.strip():
+        print(
+            f"{'Semantically ' if semantic else ''}{'c' if semantic else 'C'}hunking {characters} characters"
+        )
+        print("1. ")
+        return [""]
     print(
         f"{'Semantically ' if semantic else ''}{'c' if semantic else 'C'}hunking {characters} characters"
     )
     for i, chunk in enumerate(chunks, 1):
         print(f"{i}. {chunk}")
+    return chunks
+
+
+def embed_chunk():
+    chunk_semantic_search = ChunkedSemanticSearch()
+    try:
+        with open(DATA_PATH, "r") as f:
+            data = json.load(f)
+            movies = data.get("movies", [])
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error loading movies: {e}")
+        movies = []
+
+    if not movies:
+        print("No movies found.")
+        return
+    embeddings: np.ndarray = chunk_semantic_search.load_or_create_chunk_embeddings(
+        movies
+    )
+    print(f"Generated {len(embeddings)} chunked embeddings")
+
+
+def semantic_search_chunk(query: str, limit: int):
+    chunked_semantic_search = ChunkedSemanticSearch()
+
+    try:
+        with open(DATA_PATH, "r") as f:
+            data = json.load(f)
+            movies = data.get("movies", [])
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Error loading movies: {e}")
+        movies = []
+
+    chunked_semantic_search.load_or_create_chunk_embeddings(movies)
+    results = chunked_semantic_search.search_chunks(query, limit)
+    for i, result in enumerate(results, 1):
+        TITLE = result.get("title", "Unknown Title")
+        SCORE = result.get("score", 0.0)
+        DOCUMENT = result.get("description", "")
+        print(f"\n{i}. {TITLE} (score: {SCORE:.4f})")
+        print(f"   {DOCUMENT}...")

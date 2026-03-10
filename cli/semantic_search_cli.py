@@ -8,14 +8,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from cli.utils.paths import CACHE_DIR, DATA_PATH  # noqa: E402
 from cli.lib.semantic_search import (  # noqa: E402
+    semantic_search_chunk,
     verify_model,
     embed_text,
     verify_embeddings,
     embed_query_text,
     perform_semantic_search,
     chunk_query,
+    embed_chunk,
 )
 import argparse  # noqa: E402
 
@@ -61,10 +62,16 @@ def main() -> None:
     )
     chunk_parser.add_argument("query", type=str, help="Text to split into chunks")
     chunk_parser.add_argument(
-        "--chunk-size", type=int, default=5, help="Number of words per chunk (default: 5)"
+        "--chunk-size",
+        type=int,
+        default=5,
+        help="Number of words per chunk (default: 5)",
     )
     chunk_parser.add_argument(
-        "--overlap", type=int, help="Number of words to overlap between chunks"
+        "--overlap",
+        type=int,
+        default=0,
+        help="Number of words to overlap between chunks (default: 0)",
     )
 
     semantic_chunk_parser = subparsers.add_parser(
@@ -87,6 +94,20 @@ def main() -> None:
         help="Number of sentences to overlap between chunks (default: 0)",
     )
 
+    subparsers.add_parser(
+        "embed_chunks", help="Generates text embedding of the Chunks in the data"
+    )
+
+    search_chunked_parser = subparsers.add_parser(
+        "search_chunked", help="Do chunked semantic search"
+    )
+    search_chunked_parser.add_argument(
+        "query", type=str, help="Description for the movie"
+    )
+    search_chunked_parser.add_argument(
+        "--limit", type=int, default=5, help="Maximum number of results to return"
+    )
+
     args = parser.parse_args()
 
     match args.command:
@@ -104,6 +125,10 @@ def main() -> None:
             chunk_query(args.query, args.chunk_size, args.overlap, False)
         case "semantic_chunk":
             chunk_query(args.query, args.max_chunk_size, args.overlap, True)
+        case "embed_chunks":
+            embed_chunk()
+        case "search_chunked":
+            semantic_search_chunk(args.query, args.limit)
 
 
 if __name__ == "__main__":
